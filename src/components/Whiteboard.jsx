@@ -20,7 +20,7 @@ import VoiceRecorder from "./VoiceRecorder";
 
 const Whiteboard = () => {
   const canvasRef = useRef(null);
-  const [canvas, setCanvas] = useState(null);
+  const canvasInstance = useRef(null);
   const [mode, setMode] = useState("draw");
   const [brushColor, setBrushColor] = useState("#000000");
   const [brushSize, setBrushSize] = useState(2);
@@ -31,146 +31,48 @@ const Whiteboard = () => {
   const [colorMenu, setColorMenu] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const [isInitialized, setIsInitialized] = useState(false);
 
-  // Save canvas state to history
-  const saveState = useCallback(
-    (canvas) => {
-      if (!canvas) return;
-
-      try {
-        const state = canvas.toJSON();
-        const newHistory = history.slice(0, historyIndex + 1);
-        newHistory.push(JSON.stringify(state));
-        setHistory(newHistory);
-        setHistoryIndex(newHistory.length - 1);
-      } catch (error) {
-        console.error("Error saving state:", error);
-      }
-    },
-    [history, historyIndex]
-  );
-
-  // Initialize canvas
-  useEffect(() => {
-    if (!canvas) return;
-
-    try {
-      canvas.isDrawingMode = mode === "draw";
-      canvas.selection = mode === "select";
-      canvas.freeDrawingBrush.color = brushColor;
-      canvas.freeDrawingBrush.width = brushSize;
-      canvas.setZoom(zoom);
-      canvas.renderAll();
-    } catch (error) {
-      console.error("Error updating canvas:", error);
-    }
-  }, [mode, brushColor, brushSize, zoom, canvas]);
-
-  // Undo action
-  const undo = useCallback(() => {
-    if (!canvas || historyIndex <= 0) return;
-
-    try {
-      const newIndex = historyIndex - 1;
-      canvas.loadFromJSON(JSON.parse(history[newIndex]), () => {
-        canvas.renderAll();
-        setHistoryIndex(newIndex);
-      });
-    } catch (error) {
-      console.error("Error undoing:", error);
-    }
-  }, [canvas, history, historyIndex]);
-
-  // Redo action
-  const redo = useCallback(() => {
-    if (!canvas || historyIndex >= history.length - 1) return;
-
-    try {
-      const newIndex = historyIndex + 1;
-      canvas.loadFromJSON(JSON.parse(history[newIndex]), () => {
-        canvas.renderAll();
-        setHistoryIndex(newIndex);
-      });
-    } catch (error) {
-      console.error("Error redoing:", error);
-    }
-  }, [canvas, history, historyIndex]);
-
-  // Update canvas when settings change
-  // Initialize canvas
-  useEffect(() => {
-    if (!canvasRef.current || isInitialized) return;
-
-    const initCanvas = new fabric.Canvas(canvasRef.current, {
-      width: window.innerWidth,
-      height: window.innerHeight - 80,
-      backgroundColor: "#ffffff",
-    });
-
-    initCanvas.isDrawingMode = true;
-    initCanvas.freeDrawingBrush.color = brushColor;
-    initCanvas.freeDrawingBrush.width = brushSize;
-
-    // Save initial state
-    const initialState = initCanvas.toJSON();
-    setHistory([JSON.stringify(initialState)]);
-    setHistoryIndex(0);
-    setCanvas(initCanvas);
-    setIsInitialized(true);
-
-    // Event listeners
-    const saveStateHandler = () => {
-      const state = initCanvas.toJSON();
-      const newHistory = history.slice(0, historyIndex + 1);
-      newHistory.push(JSON.stringify(state));
-      setHistory(newHistory);
-      setHistoryIndex(newHistory.length - 1);
-    };
-
-    initCanvas.on("object:added", saveStateHandler);
-    initCanvas.on("object:modified", saveStateHandler);
-    initCanvas.on("object:removed", saveStateHandler);
-
-    // Handle window resize
-    const handleResize = () => {
-      initCanvas.setDimensions({
-        width: window.innerWidth,
-        height: window.innerHeight - 80,
-      });
-      initCanvas.renderAll();
-    };
-    window.addEventListener("resize", handleResize);
-
-    return () => {
-      initCanvas.off("object:added", saveStateHandler);
-      initCanvas.off("object:modified", saveStateHandler);
-      initCanvas.off("object:removed", saveStateHandler);
-      window.removeEventListener("resize", handleResize);
-      initCanvas.dispose();
-      setIsInitialized(false);
-    };
-  }, [brushColor, brushSize]);
-
-  // Handle zoom changes
+  // Basic utility functions
   const handleZoom = useCallback((direction) => {
     const zoomStep = 0.1;
     const minZoom = 0.5;
     const maxZoom = 3;
 
     setZoom((prevZoom) => {
-      if (direction === "in") {
-        return Math.min(prevZoom + zoomStep, maxZoom);
-      } else {
-        return Math.max(prevZoom - zoomStep, minZoom);
+      const newZoom =
+        direction === "in"
+          ? Math.min(prevZoom + zoomStep, maxZoom)
+          : Math.max(prevZoom - zoomStep, minZoom);
+
+      if (canvasInstance.current) {
+        canvasInstance.current.setZoom(newZoom);
+        canvasInstance.current.renderAll();
       }
+      return newZoom;
     });
   }, []);
 
-  // Add shape to canvas
+  // State management
+  const saveState = useCallback(() => {
+    if (!canvasInstance.current) return;
+
+    try {
+      const state = canvasInstance.current.toJSON();
+      setHistory((prevHistory) => {
+        const newHistory = prevHistory.slice(0, historyIndex + 1);
+        newHistory.push(JSON.stringify(state));
+        return newHistory;
+      });
+      setHistoryIndex((prevIndex) => prevIndex + 1);
+    } catch (error) {
+      console.error("Error saving state:", error);
+    }
+  }, [historyIndex]);
+
+  // Canvas operations
   const addShape = useCallback(
     (type) => {
-      if (!canvas) return;
+      if (!canvasInstance.current) return;
 
       try {
         let shape;
@@ -247,70 +149,92 @@ const Whiteboard = () => {
         }
 
         if (shape) {
-          canvas.add(shape);
-          canvas.setActiveObject(shape);
-          canvas.renderAll();
+          canvasInstance.current.add(shape);
+          canvasInstance.current.setActiveObject(shape);
+          canvasInstance.current.renderAll();
         }
       } catch (error) {
         console.error("Error adding shape:", error);
       }
     },
-    [brushColor, brushSize, canvas]
+    [brushColor, brushSize]
   );
 
-  // Add text to canvas
   const addText = useCallback(() => {
-    if (!canvas) return;
+    if (!canvasInstance.current) return;
 
-    const text = new fabric.IText("Double click to edit", {
-      left: 100,
-      top: 100,
-      fontFamily: "Arial",
-      fontSize: 20,
-      fill: brushColor,
-      selectable: true,
-    });
+    try {
+      const text = new fabric.IText("Double click to edit", {
+        left: 100,
+        top: 100,
+        fontFamily: "Arial",
+        fontSize: 20,
+        fill: brushColor,
+        selectable: true,
+      });
 
-    canvas.add(text);
-    canvas.setActiveObject(text);
-    canvas.renderAll();
-  }, [brushColor, canvas]);
+      canvasInstance.current.add(text);
+      canvasInstance.current.setActiveObject(text);
+      canvasInstance.current.renderAll();
+    } catch (error) {
+      console.error("Error adding text:", error);
+    }
+  }, [brushColor]);
 
-  // Clear canvas
   const clearCanvas = useCallback(() => {
-    if (canvas && canvas.getContext()) {
-      canvas.clear();
-      canvas.backgroundColor = "#ffffff";
-      canvas.renderAll();
-      saveState(canvas);
+    if (canvasInstance.current) {
+      canvasInstance.current.clear();
+      canvasInstance.current.backgroundColor = "#ffffff";
+      canvasInstance.current.renderAll();
+      // Update history
+      const state = canvasInstance.current.toJSON();
+      setHistory((prev) => [...prev, JSON.stringify(state)]);
+      setHistoryIndex((prev) => prev + 1);
     }
-  }, [canvas, saveState]);
+  }, []);
 
-  // Delete selected objects
   const deleteSelected = useCallback(() => {
-    if (!canvas) return;
-    const activeObjects = canvas.getActiveObjects();
-    if (activeObjects && activeObjects.length > 0) {
-      canvas.discardActiveObject();
-      activeObjects.forEach((obj) => canvas.remove(obj));
-      canvas.renderAll();
-      saveState(canvas);
+    if (!canvasInstance.current) return;
+    const activeObjects = canvasInstance.current.getActiveObjects();
+    if (activeObjects?.length) {
+      canvasInstance.current.discardActiveObject();
+      activeObjects.forEach((obj) => canvasInstance.current.remove(obj));
+      canvasInstance.current.renderAll();
+      // Update history
+      const state = canvasInstance.current.toJSON();
+      setHistory((prev) => [...prev, JSON.stringify(state)]);
+      setHistoryIndex((prev) => prev + 1);
     }
-  }, [canvas, saveState]);
+  }, []);
 
-  // Save canvas as image
   const saveCanvas = useCallback(() => {
-    if (!canvas) return;
+    if (!canvasInstance.current) return;
     const link = document.createElement("a");
     link.download = "whiteboard.png";
-    link.href = canvas.toDataURL({
-      format: "png",
-      quality: 1,
-    });
+    link.href = canvasInstance.current.toDataURL({ format: "png", quality: 1 });
     link.click();
-  }, [canvas]);
+  }, []);
 
-  // Execute voice commands
+  // Undo/Redo operations
+  const undo = useCallback(() => {
+    if (!canvasInstance.current || historyIndex <= 0) return;
+    const newIndex = historyIndex - 1;
+    canvasInstance.current.loadFromJSON(JSON.parse(history[newIndex]), () => {
+      canvasInstance.current.renderAll();
+      setHistoryIndex(newIndex);
+    });
+  }, [history, historyIndex]);
+
+  const redo = useCallback(() => {
+    if (!canvasInstance.current || historyIndex >= history.length - 1) return;
+    const newIndex = historyIndex + 1;
+    canvasInstance.current.loadFromJSON(JSON.parse(history[newIndex]), () => {
+      canvasInstance.current.renderAll();
+      setHistoryIndex(newIndex);
+    });
+  }, [history, historyIndex]);
+
+  // Voice commands (defined last to avoid circular dependencies)
   const executeVoiceCommand = useCallback(
     (command) => {
       const cmd = command.toLowerCase().trim();
@@ -356,6 +280,67 @@ const Whiteboard = () => {
       undo,
     ]
   );
+
+  // Initialize canvas (run only once)
+  useEffect(() => {
+    const initCanvas = new fabric.Canvas(canvasRef.current, {
+      width: window.innerWidth,
+      height: window.innerHeight - 80,
+      backgroundColor: "#ffffff",
+    });
+
+    initCanvas.isDrawingMode = true;
+    initCanvas.freeDrawingBrush.color = brushColor;
+    initCanvas.freeDrawingBrush.width = brushSize;
+
+    canvasInstance.current = initCanvas;
+
+    // Save initial state
+    const initialState = initCanvas.toJSON();
+    setHistory([JSON.stringify(initialState)]);
+    setHistoryIndex(0);
+
+    // Event listeners
+    const saveStateHandler = () => {
+      const state = initCanvas.toJSON();
+      setHistory((prev) => {
+        const newHistory = prev.slice(0, historyIndex + 1);
+        newHistory.push(JSON.stringify(state));
+        return newHistory;
+      });
+      setHistoryIndex((prev) => prev + 1);
+    };
+
+    initCanvas.on("object:added", saveStateHandler);
+    initCanvas.on("object:modified", saveStateHandler);
+    initCanvas.on("object:removed", saveStateHandler);
+
+    const handleResize = () => {
+      initCanvas.setDimensions({
+        width: window.innerWidth,
+        height: window.innerHeight - 80,
+      });
+      initCanvas.renderAll();
+    };
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      initCanvas.dispose();
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
+  // Update canvas when settings change
+  useEffect(() => {
+    if (!canvasInstance.current) return;
+
+    canvasInstance.current.isDrawingMode = mode === "draw";
+    canvasInstance.current.selection = mode === "select";
+    canvasInstance.current.freeDrawingBrush.color = brushColor;
+    canvasInstance.current.freeDrawingBrush.width = brushSize;
+    canvasInstance.current.setZoom(zoom);
+    canvasInstance.current.renderAll();
+  }, [mode, brushColor, brushSize, zoom]);
 
   // Color palette options
   const colors = [
