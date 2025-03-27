@@ -1,0 +1,8 @@
+# Ignore Python virtual environment
+backend/myenv39/
+
+# Ignore Node.js dependencies
+node_modules/
+
+# Ignore unnecessary cache
+backend/temp_audio/
