@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { fabric } from "fabric";
 import {
   IoHandRightOutline,
@@ -31,9 +31,77 @@ const Whiteboard = () => {
   const [colorMenu, setColorMenu] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [isInitialized, setIsInitialized] = useState(false);
+
+  // Save canvas state to history
+  const saveState = useCallback(
+    (canvas) => {
+      if (!canvas) return;
+
+      try {
+        const state = canvas.toJSON();
+        const newHistory = history.slice(0, historyIndex + 1);
+        newHistory.push(JSON.stringify(state));
+        setHistory(newHistory);
+        setHistoryIndex(newHistory.length - 1);
+      } catch (error) {
+        console.error("Error saving state:", error);
+      }
+    },
+    [history, historyIndex]
+  );
 
   // Initialize canvas
   useEffect(() => {
+    if (!canvas) return;
+
+    try {
+      canvas.isDrawingMode = mode === "draw";
+      canvas.selection = mode === "select";
+      canvas.freeDrawingBrush.color = brushColor;
+      canvas.freeDrawingBrush.width = brushSize;
+      canvas.setZoom(zoom);
+      canvas.renderAll();
+    } catch (error) {
+      console.error("Error updating canvas:", error);
+    }
+  }, [mode, brushColor, brushSize, zoom, canvas]);
+
+  // Undo action
+  const undo = useCallback(() => {
+    if (!canvas || historyIndex <= 0) return;
+
+    try {
+      const newIndex = historyIndex - 1;
+      canvas.loadFromJSON(JSON.parse(history[newIndex]), () => {
+        canvas.renderAll();
+        setHistoryIndex(newIndex);
+      });
+    } catch (error) {
+      console.error("Error undoing:", error);
+    }
+  }, [canvas, history, historyIndex]);
+
+  // Redo action
+  const redo = useCallback(() => {
+    if (!canvas || historyIndex >= history.length - 1) return;
+
+    try {
+      const newIndex = historyIndex + 1;
+      canvas.loadFromJSON(JSON.parse(history[newIndex]), () => {
+        canvas.renderAll();
+        setHistoryIndex(newIndex);
+      });
+    } catch (error) {
+      console.error("Error redoing:", error);
+    }
+  }, [canvas, history, historyIndex]);
+
+  // Update canvas when settings change
+  // Initialize canvas
+  useEffect(() => {
+    if (!canvasRef.current || isInitialized) return;
+
     const initCanvas = new fabric.Canvas(canvasRef.current, {
       width: window.innerWidth,
       height: window.innerHeight - 80,
@@ -43,15 +111,26 @@ const Whiteboard = () => {
     initCanvas.isDrawingMode = true;
     initCanvas.freeDrawingBrush.color = brushColor;
     initCanvas.freeDrawingBrush.width = brushSize;
-    setCanvas(initCanvas);
 
     // Save initial state
-    saveState(initCanvas);
+    const initialState = initCanvas.toJSON();
+    setHistory([JSON.stringify(initialState)]);
+    setHistoryIndex(0);
+    setCanvas(initCanvas);
+    setIsInitialized(true);
 
     // Event listeners
-    initCanvas.on("object:added", () => saveState(initCanvas));
-    initCanvas.on("object:modified", () => saveState(initCanvas));
-    initCanvas.on("object:removed", () => saveState(initCanvas));
+    const saveStateHandler = () => {
+      const state = initCanvas.toJSON();
+      const newHistory = history.slice(0, historyIndex + 1);
+      newHistory.push(JSON.stringify(state));
+      setHistory(newHistory);
+      setHistoryIndex(newHistory.length - 1);
+    };
+
+    initCanvas.on("object:added", saveStateHandler);
+    initCanvas.on("object:modified", saveStateHandler);
+    initCanvas.on("object:removed", saveStateHandler);
 
     // Handle window resize
     const handleResize = () => {
@@ -59,153 +138,128 @@ const Whiteboard = () => {
         width: window.innerWidth,
         height: window.innerHeight - 80,
       });
+      initCanvas.renderAll();
     };
     window.addEventListener("resize", handleResize);
 
     return () => {
-      initCanvas.dispose();
+      initCanvas.off("object:added", saveStateHandler);
+      initCanvas.off("object:modified", saveStateHandler);
+      initCanvas.off("object:removed", saveStateHandler);
       window.removeEventListener("resize", handleResize);
+      initCanvas.dispose();
+      setIsInitialized(false);
     };
-  }, []);
-
-  // Save canvas state to history
-  const saveState = (canvas) => {
-    const state = canvas.toJSON();
-    const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push(JSON.stringify(state));
-    setHistory(newHistory);
-    setHistoryIndex(newHistory.length - 1);
-  };
-
-  // Undo action
-  const undo = () => {
-    if (historyIndex <= 0) return;
-    const newIndex = historyIndex - 1;
-    canvas.loadFromJSON(JSON.parse(history[newIndex]), () => {
-      canvas.renderAll();
-      setHistoryIndex(newIndex);
-    });
-  };
-
-  // Redo action
-  const redo = () => {
-    if (historyIndex >= history.length - 1) return;
-    const newIndex = historyIndex + 1;
-    canvas.loadFromJSON(JSON.parse(history[newIndex]), () => {
-      canvas.renderAll();
-      setHistoryIndex(newIndex);
-    });
-  };
-
-  // Update canvas when settings change
-  useEffect(() => {
-    if (canvas) {
-      canvas.isDrawingMode = mode === "draw";
-      canvas.selection = mode === "select";
-      canvas.freeDrawingBrush.color = brushColor;
-      canvas.freeDrawingBrush.width = brushSize;
-      canvas.setZoom(zoom);
-      canvas.renderAll();
-    }
-  }, [mode, brushColor, brushSize, zoom, canvas]);
+  }, [brushColor, brushSize]);
 
   // Handle zoom changes
-  const handleZoom = (direction) => {
+  const handleZoom = useCallback((direction) => {
     const zoomStep = 0.1;
     const minZoom = 0.5;
     const maxZoom = 3;
 
-    if (direction === "in") {
-      setZoom((prevZoom) => Math.min(prevZoom + zoomStep, maxZoom));
-    } else {
-      setZoom((prevZoom) => Math.max(prevZoom - zoomStep, minZoom));
-    }
-  };
+    setZoom((prevZoom) => {
+      if (direction === "in") {
+        return Math.min(prevZoom + zoomStep, maxZoom);
+      } else {
+        return Math.max(prevZoom - zoomStep, minZoom);
+      }
+    });
+  }, []);
 
   // Add shape to canvas
-  const addShape = (type) => {
-    if (!canvas) return;
+  const addShape = useCallback(
+    (type) => {
+      if (!canvas) return;
 
-    let shape;
-    const commonProps = {
-      left: 100,
-      top: 100,
-      fill: "transparent",
-      stroke: brushColor,
-      strokeWidth: brushSize,
-      selectable: true,
-    };
-
-    switch (type) {
-      case "rectangle":
-        shape = new fabric.Rect({
-          width: 120,
-          height: 80,
-          ...commonProps,
-        });
-        break;
-      case "square":
-        shape = new fabric.Rect({
-          width: 100,
-          height: 100,
-          ...commonProps,
-        });
-        break;
-      case "triangle":
-        shape = new fabric.Triangle({
-          width: 100,
-          height: 100,
-          ...commonProps,
-        });
-        break;
-      case "circle":
-        shape = new fabric.Circle({
-          radius: 50,
-          ...commonProps,
-        });
-        break;
-      case "line":
-        shape = new fabric.Line([50, 100, 200, 100], {
-          stroke: brushColor,
-          strokeWidth: brushSize,
-          selectable: true,
-        });
-        break;
-      case "arrow":
-        const line = new fabric.Line([50, 100, 150, 100], {
-          stroke: brushColor,
-          strokeWidth: brushSize,
-          selectable: true,
-        });
-
-        const arrowHead = new fabric.Triangle({
-          width: 15,
-          height: 20,
-          fill: brushColor,
-          left: 150,
-          top: 100,
-          angle: 0,
-          originX: "center",
-          originY: "center",
-        });
-
-        shape = new fabric.Group([line, arrowHead], {
+      try {
+        let shape;
+        const commonProps = {
           left: 100,
           top: 100,
+          fill: "transparent",
+          stroke: brushColor,
+          strokeWidth: brushSize,
           selectable: true,
-        });
-        break;
-      default:
-        return;
-    }
+        };
 
-    canvas.add(shape);
-    canvas.setActiveObject(shape);
-    canvas.renderAll();
-  };
+        switch (type) {
+          case "rectangle":
+            shape = new fabric.Rect({
+              width: 120,
+              height: 80,
+              ...commonProps,
+            });
+            break;
+          case "square":
+            shape = new fabric.Rect({
+              width: 100,
+              height: 100,
+              ...commonProps,
+            });
+            break;
+          case "triangle":
+            shape = new fabric.Triangle({
+              width: 100,
+              height: 100,
+              ...commonProps,
+            });
+            break;
+          case "circle":
+            shape = new fabric.Circle({
+              radius: 50,
+              ...commonProps,
+            });
+            break;
+          case "line":
+            shape = new fabric.Line([50, 100, 200, 100], {
+              stroke: brushColor,
+              strokeWidth: brushSize,
+              selectable: true,
+            });
+            break;
+          case "arrow":
+            const line = new fabric.Line([50, 100, 150, 100], {
+              stroke: brushColor,
+              strokeWidth: brushSize,
+              selectable: true,
+            });
+
+            const arrowHead = new fabric.Triangle({
+              width: 15,
+              height: 20,
+              fill: brushColor,
+              left: 150,
+              top: 100,
+              angle: 0,
+              originX: "center",
+              originY: "center",
+            });
+
+            shape = new fabric.Group([line, arrowHead], {
+              left: 100,
+              top: 100,
+              selectable: true,
+            });
+            break;
+          default:
+            return;
+        }
+
+        if (shape) {
+          canvas.add(shape);
+          canvas.setActiveObject(shape);
+          canvas.renderAll();
+        }
+      } catch (error) {
+        console.error("Error adding shape:", error);
+      }
+    },
+    [brushColor, brushSize, canvas]
+  );
 
   // Add text to canvas
-  const addText = () => {
+  const addText = useCallback(() => {
     if (!canvas) return;
 
     const text = new fabric.IText("Double click to edit", {
@@ -220,19 +274,20 @@ const Whiteboard = () => {
     canvas.add(text);
     canvas.setActiveObject(text);
     canvas.renderAll();
-  };
+  }, [brushColor, canvas]);
 
   // Clear canvas
-  const clearCanvas = () => {
-    if (canvas) {
+  const clearCanvas = useCallback(() => {
+    if (canvas && canvas.getContext()) {
       canvas.clear();
       canvas.backgroundColor = "#ffffff";
+      canvas.renderAll();
       saveState(canvas);
     }
-  };
+  }, [canvas, saveState]);
 
   // Delete selected objects
-  const deleteSelected = () => {
+  const deleteSelected = useCallback(() => {
     if (!canvas) return;
     const activeObjects = canvas.getActiveObjects();
     if (activeObjects && activeObjects.length > 0) {
@@ -241,10 +296,10 @@ const Whiteboard = () => {
       canvas.renderAll();
       saveState(canvas);
     }
-  };
+  }, [canvas, saveState]);
 
   // Save canvas as image
-  const saveCanvas = () => {
+  const saveCanvas = useCallback(() => {
     if (!canvas) return;
     const link = document.createElement("a");
     link.download = "whiteboard.png";
@@ -253,42 +308,54 @@ const Whiteboard = () => {
       quality: 1,
     });
     link.click();
-  };
+  }, [canvas]);
 
   // Execute voice commands
-  const executeVoiceCommand = (command) => {
-    const cmd = command.toLowerCase().trim();
-    console.log("Executing command:", cmd);
+  const executeVoiceCommand = useCallback(
+    (command) => {
+      const cmd = command.toLowerCase().trim();
+      console.log("Executing command:", cmd);
 
-    if (cmd.includes("draw")) {
-      if (cmd.includes("circle")) addShape("circle");
-      else if (cmd.includes("rectangle")) addShape("rectangle");
-      else if (cmd.includes("square")) addShape("square");
-      else if (cmd.includes("triangle")) addShape("triangle");
-      else if (cmd.includes("line")) addShape("line");
-      else if (cmd.includes("arrow")) addShape("arrow");
-    } else if (cmd.includes("add text") || cmd.includes("text")) {
-      addText();
-    } else if (cmd.includes("select")) {
-      setMode("select");
-    } else if (cmd.includes("draw mode") || cmd.includes("draw")) {
-      setMode("draw");
-    } else if (cmd.includes("clear canvas") || cmd.includes("clear")) {
-      clearCanvas();
-    } else if (cmd.includes("undo")) {
-      undo();
-    } else if (cmd.includes("redo")) {
-      redo();
-    } else if (cmd.includes("save")) {
-      saveCanvas();
-    } else if (cmd.includes("zoom in")) {
-      handleZoom("in");
-    } else if (cmd.includes("zoom out")) {
-      handleZoom("out");
-    } else if (cmd.includes("delete") || cmd.includes("remove")) {
-      deleteSelected();
-    }
-  };
+      if (cmd.includes("draw")) {
+        if (cmd.includes("circle")) addShape("circle");
+        else if (cmd.includes("rectangle")) addShape("rectangle");
+        else if (cmd.includes("square")) addShape("square");
+        else if (cmd.includes("triangle")) addShape("triangle");
+        else if (cmd.includes("line")) addShape("line");
+        else if (cmd.includes("arrow")) addShape("arrow");
+      } else if (cmd.includes("add text") || cmd.includes("text")) {
+        addText();
+      } else if (cmd.includes("select")) {
+        setMode("select");
+      } else if (cmd.includes("draw mode") || cmd.includes("draw")) {
+        setMode("draw");
+      } else if (cmd.includes("clear canvas") || cmd.includes("clear")) {
+        clearCanvas();
+      } else if (cmd.includes("undo")) {
+        undo();
+      } else if (cmd.includes("redo")) {
+        redo();
+      } else if (cmd.includes("save")) {
+        saveCanvas();
+      } else if (cmd.includes("zoom in")) {
+        handleZoom("in");
+      } else if (cmd.includes("zoom out")) {
+        handleZoom("out");
+      } else if (cmd.includes("delete") || cmd.includes("remove")) {
+        deleteSelected();
+      }
+    },
+    [
+      addShape,
+      addText,
+      clearCanvas,
+      deleteSelected,
+      handleZoom,
+      redo,
+      saveCanvas,
+      undo,
+    ]
+  );
 
   // Color palette options
   const colors = [
@@ -310,7 +377,7 @@ const Whiteboard = () => {
       <div className="fixed top-0 left-0 right-0 z-20 bg-white shadow-md flex items-center justify-between p-2 px-4 border-b border-gray-200">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold text-gray-800 hidden md:block">
-            VoxBoard
+            Collaborative Whiteboard
           </h1>
 
           {/* Mode Selectors */}
